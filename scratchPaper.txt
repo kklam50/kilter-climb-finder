@@ -1,0 +1,30 @@
+[{'x': 108, 'y': 4, 'type_id': 12, 'symbol': 'S'}, 
+Starting from placements: 1141 (placements) -> 1174 (holes) -> 8, 40
+Starting from holes: 1141 (holes) -> 108, 4
+{'x': 72, 'y': 8, 'type_id': 15, 'symbol': 'X'}, 
+{'x': 4, 'y': 116, 'type_id': 13, 'symbol': 'M'}, 
+{'x': 16, 'y': 112, 'type_id': 13, 'symbol': 'M'}, 
+{'x': 28, 'y': 92, 'type_id': 13, 'symbol': 'M'}, 
+{'x': 28, 'y': 108, 'type_id': 13, 'symbol': 'M'}, 
+{'x': 36, 'y': 132, 'type_id': 13, 'symbol': 'M'}, 
+{'x': 40, 'y': 88, 'type_id': 13, 'symbol': 'M'}, 
+{'x': 56, 'y': 48, 'type_id': 14, 'symbol': 'F'}, 
+Starting from placements: 1353 (placements) -> 1426 (holes) -> 72, 136
+Starting from holes: 1353 (holes) -> 56	48
+{'x': 88, 'y': 16, 'type_id': 15, 'symbol': 'X'}, 
+Starting from placements: 1461 (placements) -> 1161 (holes) -> 28, 4
+Starting from holes: 1461 (holes) -> 88, 16
+{'x': 88, 'y': 32, 'type_id': 15, 'symbol': 'X'}]
+
+
+[{'x': 108, 'y': 4, 'type_id': 12, 'symbol': 'G'}, 
+{'x': 72, 'y': 8, 'type_id': 15, 'symbol': 'O'}, 
+{'x': 4, 'y': 116, 'type_id': 13, 'symbol': 'B'}, 
+{'x': 16, 'y': 112, 'type_id': 13, 'symbol': 'B'}, 
+{'x': 28, 'y': 92, 'type_id': 13, 'symbol': 'B'}, 
+{'x': 28, 'y': 108, 'type_id': 13, 'symbol': 'B'}, 
+{'x': 36, 'y': 132, 'type_id': 13, 'symbol': 'B'}, 
+{'x': 40, 'y': 88, 'type_id': 13, 'symbol': 'B'}, 
+{'x': 56, 'y': 48, 'type_id': 14, 'symbol': 'P'}, 
+{'x': 88, 'y': 16, 'type_id': 15, 'symbol': 'O'}, 
+{'x': 88, 'y': 32, 'type_id': 15, 'symbol': 'O'}]
