@@ -2,3 +2,6 @@
 .claude
 /memory
 /training_data
+.venv
+/generate_training_data_v2/movement_encoder_model
+/generate_training_data_v2/__pycache__
