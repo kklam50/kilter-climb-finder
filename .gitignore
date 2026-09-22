@@ -1,7 +1,6 @@
-/db
+/server/db
+/server/__pycache__
 .claude
-/memory
-/training_data
 .venv
-/generate_training_data_v2/movement_encoder_model
-/generate_training_data_v2/__pycache__
+/server/generate_training_data_v2/movement_encoder_model
+/server/generate_training_data_v2/__pycache__

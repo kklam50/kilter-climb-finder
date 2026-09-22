@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Kilter Climb Finder</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="page">
+    <header>
+      <h1>Kilter Climb Finder</h1>
+      <div id="health" class="health health--unknown">checking server…</div>
+    </header>
+
+    <form id="search-form" class="search-form">
+      <div class="field field--grow">
+        <label for="climb-name">Climb name</label>
+        <input id="climb-name" name="climb-name" type="text" placeholder="e.g. Master Chief" required />
+      </div>
+
+      <div class="field">
+        <label for="mode">Mode</label>
+        <select id="mode" name="mode">
+          <option value="similar">Similar</option>
+          <option value="opposite">Opposite</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label for="top-k">Top K</label>
+        <input id="top-k" name="top-k" type="number" min="1" max="50" value="5" />
+      </div>
+
+      <div class="field">
+        <label for="angle-tolerance">Angle tolerance</label>
+        <input id="angle-tolerance" name="angle-tolerance" type="number" min="0" value="10" />
+      </div>
+
+      <div class="field">
+        <label for="difficulty-tolerance">Difficulty tolerance</label>
+        <input id="difficulty-tolerance" name="difficulty-tolerance" type="number" min="0" value="2" />
+      </div>
+
+      <button type="submit" id="submit-btn">Find recommendations</button>
+    </form>
+
+    <div id="status" class="status" hidden></div>
+
+    <section id="picker" class="picker" hidden>
+      <h2>Multiple climbs named this — pick one</h2>
+      <div id="picker-list" class="picker-list"></div>
+    </section>
+
+    <section id="results" class="results" hidden>
+      <h2>Matches</h2>
+      <div id="matches" class="matches"></div>
+
+      <details class="context">
+        <summary>Assembled context</summary>
+        <pre id="context-text"></pre>
+      </details>
+    </section>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
