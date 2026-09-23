@@ -1,7 +1,13 @@
 """
 Implements plan.md Section 6 (Phase 3): the query-time application layer.
 
-No model calls happen in get_candidates() or assemble_context() -- both are
+Matching is pattern-only (pattern_only_matching_plan.md Section 0): angle
+and difficulty are climb metadata, not matching dimensions, so there is no
+candidate-narrowing step before the vector search -- every window of the
+right sequence_length is a candidate. Angle/grade are resolved only for the
+final top-k matches (_enrich_angles()), never used to filter the search.
+
+No model calls happen in assemble_context() or _enrich_angles() -- both are
 pure SQL/string formatting, per the architecture decision earlier in the
 plan (app retrieves, generator only formats). The trained bi-encoder is
 used only in find_similar()/find_opposite(), and only against the
@@ -9,7 +15,6 @@ precomputed vector index from Phase 2 -- there is no per-query re-embedding
 of the whole database.
 
 Core functions (plan.md 6.1-6.4):
-  get_candidates()   -- cheap metadata narrowing, SQL only
   find_similar()     -- embed a query, dot-product search against the index (nearest)
   find_opposite()    -- same search, same query vector, ranked FARTHEST instead
                          of nearest. "Opposite" is defined as: the normalized
@@ -145,87 +150,54 @@ class RetrievalEngine:
         )
         return [matched_name for matched_name, _score, _index in results]
 
-    # -- 6.1: cheap metadata narrowing, no model involved -------------------
-
-    def get_candidates(self, reference_climb_id, angle_tolerance=10,
-                        difficulty_tolerance=2, limit=2000):
-        """
-        Returns a list of climb_ids "in the neighborhood" of the reference
-        climb by angle/difficulty, excluding the reference climb itself.
-
-        NOTE: plan.md also lists hold_count as a filter dimension. That is
-        not currently stored anywhere (frames would need to be re-decoded
-        per candidate to get it, which defeats the point of a cheap filter).
-        If hold-count filtering turns out to matter, the right fix is
-        storing hold_count as a column during backfill_subpatterns.py, not
-        computing it here. Left out for now rather than approximated.
-        """
-        ref = self.db.execute(
-            "SELECT cs.angle, cs.difficulty_average FROM climb_stats cs "
-            "WHERE cs.climb_uuid = ?",
-            (reference_climb_id,),
-        ).fetchone()
-        if ref is None:
-            raise ValueError(f"No climb_stats found for climb_id={reference_climb_id}")
-        ref_angle, ref_difficulty = ref
-
-        rows = self.db.execute(
-            """
-            SELECT c.uuid FROM climbs c
-            JOIN climb_stats cs ON c.uuid = cs.climb_uuid
-            WHERE c.uuid != ?
-              AND cs.angle BETWEEN ? AND ?
-              AND (? IS NULL OR cs.difficulty_average BETWEEN ? AND ?)
-            LIMIT ?
-            """,
-            (
-                reference_climb_id,
-                ref_angle - angle_tolerance, ref_angle + angle_tolerance,
-                ref_difficulty,
-                (ref_difficulty or 0) - difficulty_tolerance,
-                (ref_difficulty or 0) + difficulty_tolerance,
-                limit,
-            ),
-        ).fetchall()
-        return [r[0] for r in rows]
-
     # -- shared search core ---------------------------------------------------
+    #
+    # No candidate narrowing step: matching is pattern-only (governing
+    # principle, plan.md Section 0) -- angle/difficulty are metadata, not
+    # matching dimensions, so there is no cheap pre-filter left to apply.
+    # Candidate selection collapses to "every window of the right
+    # sequence_length, excluding the reference climb's own windows",
+    # handled directly in _search()'s WHERE clause.
+
+    # Chunked to stay under SQLite's default ~999-variable-per-statement
+    # limit -- now that candidate narrowing is gone (Section 3), callers
+    # can pass tens of thousands of occurrence_ids at once (every window of
+    # a given sequence_length).
+    _ROW_LOOKUP_CHUNK = 500
 
     def _row_indices_for(self, occurrence_ids):
         if not occurrence_ids:
             return {}
-        placeholders = ",".join("?" * len(occurrence_ids))
-        rows = self.map_db.execute(
-            f"SELECT occurrence_id, row_index FROM embedding_index "
-            f"WHERE occurrence_id IN ({placeholders})",
-            occurrence_ids,
-        ).fetchall()
-        return dict(rows)
+        result = {}
+        for i in range(0, len(occurrence_ids), self._ROW_LOOKUP_CHUNK):
+            chunk = occurrence_ids[i:i + self._ROW_LOOKUP_CHUNK]
+            placeholders = ",".join("?" * len(chunk))
+            rows = self.map_db.execute(
+                f"SELECT occurrence_id, row_index FROM embedding_index "
+                f"WHERE occurrence_id IN ({placeholders})",
+                chunk,
+            ).fetchall()
+            result.update(rows)
+        return result
 
-    def _search(self, query_vector, candidate_climb_ids, sequence_length,
-                exclude_climb_id, top_k, farthest=False):
+    def _search(self, query_vector, sequence_length, exclude_climb_id, top_k,
+                farthest=False):
         """
         query_vector: 1D normalized np array, shape (dim,)
         farthest: if True, return the LOWEST-scoring candidates instead of the
                   highest -- this is the entire mechanism behind find_opposite().
-        Returns list of dicts: occurrence_id, climb_id, climb_name, climb_grade,
-        angle, is_mirrored, score (dot product == cosine similarity, since
+        Returns list of dicts: occurrence_id, climb_id, climb_name,
+        is_mirrored, score (dot product == cosine similarity, since
         index vectors are pre-normalized -- see build_embedding_index.py).
         """
-        if not candidate_climb_ids:
-            return []
-
-        placeholders = ",".join("?" * len(candidate_climb_ids))
-        params = list(candidate_climb_ids) + [sequence_length, exclude_climb_id]
         candidates = self.db.execute(
-            f"""
-            SELECT id, climb_id, climb_name, climb_grade, angle, is_mirrored
+            """
+            SELECT id, climb_id, climb_name, is_mirrored
             FROM subpattern_occurrences
-            WHERE climb_id IN ({placeholders})
-              AND sequence_length = ?
+            WHERE sequence_length = ?
               AND climb_id != ?
             """,
-            params,
+            (sequence_length, exclude_climb_id),
         ).fetchall()
         if not candidates:
             return []
@@ -249,9 +221,7 @@ class RetrievalEngine:
                 "occurrence_id": row[0],
                 "climb_id": row[1],
                 "climb_name": row[2],
-                "climb_grade": row[3],
-                "angle": row[4],
-                "is_mirrored": bool(row[5]),
+                "is_mirrored": bool(row[3]),
                 "score": float(score),
             }
             for row, score in ranked
@@ -259,7 +229,7 @@ class RetrievalEngine:
 
     # -- 6.2: similarity search ------------------------------------------------
 
-    def find_similar(self, reference_occurrence_id, candidate_climb_ids, top_k=10):
+    def find_similar(self, reference_occurrence_id, top_k=10):
         ref = self.db.execute(
             "SELECT climb_id, sequence_length FROM subpattern_occurrences WHERE id = ?",
             (reference_occurrence_id,),
@@ -273,12 +243,11 @@ class RetrievalEngine:
             raise ValueError(f"No embedding found for occurrence_id={reference_occurrence_id}")
         query_vector = np.asarray(self.vectors[row_index_map[reference_occurrence_id]])
 
-        return self._search(query_vector, candidate_climb_ids, sequence_length,
-                             ref_climb_id, top_k)
+        return self._search(query_vector, sequence_length, ref_climb_id, top_k)
 
     # -- 6.3: "opposite" = farthest in the same trained similarity space --------
 
-    def find_opposite(self, reference_occurrence_id, candidate_climb_ids, top_k=10):
+    def find_opposite(self, reference_occurrence_id, top_k=10):
         """
         Same query vector as find_similar() -- the reference window's own
         embedding, straight from the index, no transformation. The only
@@ -298,8 +267,29 @@ class RetrievalEngine:
             raise ValueError(f"No embedding found for occurrence_id={reference_occurrence_id}")
         query_vector = np.asarray(self.vectors[row_index_map[reference_occurrence_id]])
 
-        return self._search(query_vector, candidate_climb_ids, sequence_length,
-                             ref_climb_id, top_k, farthest=True)
+        return self._search(query_vector, sequence_length, ref_climb_id, top_k, farthest=True)
+
+    # -- angle/grade enrichment: resolved only for final top-k matches ----------
+
+    def _enrich_angles(self, climb_id):
+        """
+        Grade is angle-scoped (climb_stats.difficulty_average + difficulty_grades
+        join), so it can't live on a deduped (climb, window) occurrence row --
+        resolved here instead, only for climbs that made the final result
+        (plan.md Section 4), never against the full candidate pool.
+        """
+        rows = self.db.execute(
+            """
+            SELECT cs.angle, cs.difficulty_average, dg.boulder_name
+            FROM climb_stats cs
+            LEFT JOIN difficulty_grades dg
+              ON CAST(ROUND(cs.difficulty_average) AS INTEGER) = dg.difficulty
+            WHERE cs.climb_uuid = ?
+            ORDER BY cs.angle
+            """,
+            (climb_id,),
+        ).fetchall()
+        return [{"angle": r[0], "grade": r[2]} for r in rows]
 
     # -- 6.4: context assembly for the generator, no model call -----------------
 
@@ -309,16 +299,18 @@ class RetrievalEngine:
         lines = []
         for m in matches:
             relation = "mirrored" if m["is_mirrored"] else "direct"
+            angles = ", ".join(
+                f"{a['angle']}° ({a['grade'] or 'ungraded'})" for a in m["angles"]
+            ) or "no logged angles"
             lines.append(
-                f"- {m['climb_name']} (grade {m['climb_grade']}, angle {m['angle']}): "
+                f"- {m['climb_name']} [{angles}]: "
                 f"similarity {m['score']:.3f} ({relation} movement match)"
             )
         return "\n".join(lines)
 
     # -- orchestration: window-level matches -> climb-level recommendations -----
 
-    def recommend_for_climb(self, reference_climb_id, mode="similar", top_k=5,
-                             angle_tolerance=10, difficulty_tolerance=2):
+    def recommend_for_climb(self, reference_climb_id, mode="similar", top_k=5):
         """
         Aggregates across all of the reference climb's windows (sizes 2-5) to
         produce climb-level recommendations, since raw window matches aren't
@@ -331,16 +323,12 @@ class RetrievalEngine:
         if mode not in ("similar", "opposite"):
             raise ValueError("mode must be 'similar' or 'opposite'")
 
-        candidate_climb_ids = self.get_candidates(
-            reference_climb_id, angle_tolerance, difficulty_tolerance
-        )
-        if not candidate_climb_ids:
-            return []
-
         reference_windows = self.db.execute(
             "SELECT id FROM subpattern_occurrences WHERE climb_id = ?",
             (reference_climb_id,),
         ).fetchall()
+        if not reference_windows:
+            raise ValueError(f"No subpattern windows found for climb_id={reference_climb_id}")
 
         search_fn = self.find_similar if mode == "similar" else self.find_opposite
         # For "similar", the best-representing window per climb is the highest
@@ -352,7 +340,7 @@ class RetrievalEngine:
         best_by_climb = {}
         window_counts = {}
         for (occurrence_id,) in reference_windows:
-            matches = search_fn(occurrence_id, candidate_climb_ids, top_k=top_k)
+            matches = search_fn(occurrence_id, top_k=top_k)
             for m in matches:
                 cid = m["climb_id"]
                 if cid not in best_by_climb or better(m["score"], best_by_climb[cid]["score"]):
@@ -361,6 +349,7 @@ class RetrievalEngine:
 
         for cid, m in best_by_climb.items():
             m["matched_window_count"] = window_counts[cid]
+            m["angles"] = self._enrich_angles(cid)
 
         ranked = sorted(best_by_climb.values(), key=lambda m: m["score"],
                          reverse=(mode == "similar"))

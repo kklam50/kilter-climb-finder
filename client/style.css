@@ -210,6 +210,22 @@ button:disabled {
   font-size: 0.85rem;
 }
 
+.match-card__angles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.angle-chip {
+  background: rgba(91, 141, 239, 0.12);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+}
+
 .match-card__score {
   font-variant-numeric: tabular-nums;
   color: var(--accent);

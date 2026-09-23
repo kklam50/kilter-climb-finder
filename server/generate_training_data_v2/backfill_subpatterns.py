@@ -152,17 +152,15 @@ def get_product_id_for_layout(conn, layout_id):
 # ---------------------------------------------------------------------------
 
 CLIMBS_QUERY = """
-SELECT c.uuid, c.layout_id, c.name, c.description, c.frames, c.created_at,
-       cs.ascensionist_count as ascensionist_count,
-       cs.angle as angle,
-       dg.boulder_name as climb_grade
+SELECT c.uuid, c.layout_id, c.name, c.description, c.frames, c.created_at
 FROM climbs c
-LEFT JOIN climb_stats cs ON c.uuid = cs.climb_uuid
-    AND cs.ascensionist_count > 5
-    AND cs.angle IS NOT NULL
-LEFT JOIN difficulty_grades dg ON CAST(ROUND(cs.difficulty_average) AS INTEGER) = dg.difficulty
 WHERE c.layout_id = ?
-    AND cs.angle IS NOT NULL
+    AND EXISTS (
+        SELECT 1 FROM climb_stats cs
+        WHERE cs.climb_uuid = c.uuid
+          AND cs.ascensionist_count > 5
+          AND cs.angle IS NOT NULL
+    )
 """
 
 
@@ -178,8 +176,6 @@ def ensure_table(conn):
             raw_key TEXT NOT NULL,
             climb_id TEXT NOT NULL,
             climb_name TEXT,
-            angle REAL,
-            climb_grade TEXT,
             start_coords TEXT,
             end_coords TEXT,
             sequence_length INTEGER,
@@ -222,8 +218,7 @@ def backfill():
         climbs_in_batch = 0
 
         for row in conn.execute(CLIMBS_QUERY, (layout_id,)):
-            uuid, _layout_id, name, _desc, frames, _created_at, \
-                _ascensionist_count, angle, climb_grade = row
+            uuid, _layout_id, name, _desc, frames, _created_at = row
 
             piece_map = parse_frames_to_piece_map(frames, holes_table, placement_roles_table)
             if not piece_map:
@@ -236,8 +231,6 @@ def backfill():
                         w["raw_key"],
                         uuid,
                         name,
-                        angle,
-                        climb_grade,
                         f"{w['start_hold']['x']},{w['start_hold']['y']}",
                         f"{w['end_hold']['x']},{w['end_hold']['y']}",
                         window_size,
@@ -274,9 +267,9 @@ def backfill():
 def _insert_batch(conn, rows):
     conn.executemany("""
         INSERT INTO subpattern_occurrences
-        (canonical_key, raw_key, climb_id, climb_name, angle, climb_grade,
+        (canonical_key, raw_key, climb_id, climb_name,
          start_coords, end_coords, sequence_length, is_mirrored)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, rows)
 
 

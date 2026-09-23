@@ -7,7 +7,7 @@ Run with:
 
 Endpoints:
   GET /health
-  GET /climbs/{climb_id}/recommendations?mode=similar&top_k=5&angle_tolerance=10&difficulty_tolerance=2
+  GET /climbs/{climb_id}/recommendations?mode=similar&top_k=5
 
 Master Chief: 28EFC798ECE24D55A15AC0FE23FA986B
 """
@@ -61,11 +61,15 @@ app.add_middleware(
 # Response models
 # ---------------------------------------------------------------------------
 
+class AngleGrade(BaseModel):
+    angle: float
+    grade: str | None
+
+
 class ClimbMatch(BaseModel):
     climb_id: str
     climb_name: str | None
-    climb_grade: str | None
-    angle: float | None
+    angles: list[AngleGrade]
     is_mirrored: bool
     score: float
     matched_window_count: int
@@ -138,8 +142,6 @@ def get_recommendations(
     climb_id: str,
     mode: Literal["similar", "opposite"] = "similar",
     top_k: int = Query(5, ge=1, le=50),
-    angle_tolerance: float = Query(10, ge=0),
-    difficulty_tolerance: float = Query(2, ge=0),
 ):
     if engine is None:
         # Should be unreachable given lifespan setup, but fail loudly
@@ -147,17 +149,11 @@ def get_recommendations(
         raise HTTPException(status_code=503, detail="Retrieval engine not initialized")
 
     try:
-        matches = engine.recommend_for_climb(
-            climb_id,
-            mode=mode,
-            top_k=top_k,
-            angle_tolerance=angle_tolerance,
-            difficulty_tolerance=difficulty_tolerance,
-        )
+        matches = engine.recommend_for_climb(climb_id, mode=mode, top_k=top_k)
     except ValueError as e:
         # RetrievalEngine raises bare ValueError for "climb not found" /
-        # "no climb_stats" / "no embedding for occurrence" -- all of these
-        # are client-facing 404s, not server errors.
+        # "no subpattern windows" / "no embedding for occurrence" -- all of
+        # these are client-facing 404s, not server errors.
         raise HTTPException(status_code=404, detail=str(e))
 
     return RecommendationResponse(
@@ -167,8 +163,7 @@ def get_recommendations(
             ClimbMatch(
                 climb_id=m["climb_id"],
                 climb_name=m["climb_name"],
-                climb_grade=m["climb_grade"],
-                angle=m["angle"],
+                angles=[AngleGrade(**a) for a in m["angles"]],
                 is_mirrored=m["is_mirrored"],
                 score=m["score"],
                 matched_window_count=m["matched_window_count"],

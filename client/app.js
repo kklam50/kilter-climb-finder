@@ -43,15 +43,18 @@ function renderMatches(data) {
   for (const match of data.matches) {
     const card = document.createElement("div");
     card.className = "match-card";
+    const angleChips = match.angles.length
+      ? match.angles
+          .map((a) => `<span class="angle-chip">${a.angle}° · ${escapeHtml(a.grade ?? "ungraded")}</span>`)
+          .join("")
+      : `<span class="angle-chip">no logged angles</span>`;
     card.innerHTML = `
       <div>
         <div class="match-card__name">${escapeHtml(match.climb_name ?? match.climb_id)}</div>
         <div class="match-card__meta">
-          ${escapeHtml(match.climb_grade ?? "unknown grade")}
-          · angle ${match.angle ?? "?"}°
-          ${match.is_mirrored ? "· mirrored" : ""}
-          · ${match.matched_window_count} matched windows
+          ${match.is_mirrored ? "mirrored · " : ""}${match.matched_window_count} matched windows
         </div>
+        <div class="match-card__angles">${angleChips}</div>
       </div>
       <div class="match-card__score">${match.score.toFixed(3)}</div>
     `;
@@ -72,8 +75,6 @@ function getFormParams() {
   return {
     mode: document.getElementById("mode").value,
     top_k: document.getElementById("top-k").value,
-    angle_tolerance: document.getElementById("angle-tolerance").value,
-    difficulty_tolerance: document.getElementById("difficulty-tolerance").value,
   };
 }
 

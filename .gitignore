@@ -4,3 +4,4 @@
 .venv
 /server/generate_training_data_v2/movement_encoder_model
 /server/generate_training_data_v2/__pycache__
+/plans
