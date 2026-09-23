@@ -2,14 +2,19 @@
 Backfill script: computes canonical movement subpatterns for every climb,
 across every board layout, and stores them in a queryable SQLite table
 (subpattern_occurrences).
+
+Implements knn_spacing_representation_plan.md: a window is a hold's `k`
+nearest neighbors by straight-line distance (not the old sorted-by-Y
+consecutive-delta chain). WINDOW_SIZES values are now `k` -- reused as-is,
+still stored in the `sequence_length` column, per the plan's Section 1.2.
 """
 
 import sqlite3
 import re
 import time
 
-DB_PATH = "../db/db.sqlite"    
-WINDOW_SIZES = [3, 4, 5]        # movement window sizes
+DB_PATH = "../db/db.sqlite"
+WINDOW_SIZES = [3, 4, 5]        # k: number of nearest neighbors per window
 BATCH_CLIMBS = 500
 
 
@@ -53,34 +58,39 @@ def parse_frames_to_piece_map(frames_str, holes_table, placement_roles_table):
     return piece_map
 
 
-def extract_canonical_windows(piece_map, window_size=3):
+def extract_canonical_windows(piece_map, k=3):
     # Filters out symbol "X" holds -- keeps everything else. See note above
     # about this not being restricted to "M" (hand) holds specifically.
     m_holds = [hold for hold in piece_map if hold.get("symbol") != "X"]
 
-    if len(m_holds) < window_size:
+    if len(m_holds) < k + 1:
         return []
 
-    # Sort filtered holds vertically (bottom to top by Y-coordinate)
-    sorted_holds = sorted(m_holds, key=lambda h: h['y'])
-
-    # Calculate relative delta vectors between consecutive holds
-    deltas = []
-    for i in range(len(sorted_holds) - 1):
-        dx = sorted_holds[i + 1]['x'] - sorted_holds[i]['x']
-        dy = sorted_holds[i + 1]['y'] - sorted_holds[i]['y']
-        deltas.append((dx, dy))
-
     windows = []
-    for i in range(len(deltas) - window_size + 1):
-        win = deltas[i:i + window_size]
+    for anchor in m_holds:
+        # Distance to every other hold; deterministic tiebreak
+        # (dist_sq, dy, dx) so exact ties on the shared grid always resolve
+        # the same way across backfill runs.
+        others = []
+        for h in m_holds:
+            if h is anchor:
+                continue
+            dx = h['x'] - anchor['x']
+            dy = h['y'] - anchor['y']
+            others.append((dx * dx + dy * dy, dy, dx, h))
+        others.sort(key=lambda o: (o[0], o[1], o[2]))
+        nearest = others[:k]
 
-        # Invert dx if first move goes left, for canonical (mirror) normalization
-        if win[0][0] < 0:
-            norm_win = [(-dx, dy) for dx, dy in win]
+        deltas = [(dx, dy) for _dist_sq, dy, dx, _h in nearest]
+
+        # Invert dx if the nearest neighbor is to the left, for canonical
+        # (mirror) normalization -- generalized from "first delta" (old,
+        # sorted-by-Y scheme) to "nearest neighbor" (this scheme).
+        if deltas[0][0] < 0:
+            norm_win = [(-dx, dy) for dx, dy in deltas]
             is_mirrored = True
         else:
-            norm_win = win
+            norm_win = deltas
             is_mirrored = False
 
         loose_parts, raw_parts = [], []
@@ -95,8 +105,8 @@ def extract_canonical_windows(piece_map, window_size=3):
             "canonical_key": " | ".join(loose_parts),
             "raw_key": " | ".join(raw_parts),
             "is_mirrored": is_mirrored,
-            "start_hold": sorted_holds[i],
-            "end_hold": sorted_holds[i + window_size],
+            "start_hold": anchor,             # the neighborhood's center
+            "end_hold": nearest[-1][3],        # farthest of the k neighbors
         })
 
     return windows

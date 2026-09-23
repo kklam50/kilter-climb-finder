@@ -18,6 +18,7 @@ from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from server.generate_training_data_v2.retrieval import RetrievalEngine
@@ -172,3 +173,11 @@ def get_recommendations(
         ],
         context=engine.assemble_context(matches),
     )
+
+
+# ---------------------------------------------------------------------------
+# Static frontend (client/) -- mounted last so it never shadows the API
+# routes above; Starlette matches routes in registration order.
+# ---------------------------------------------------------------------------
+
+app.mount("/", StaticFiles(directory="client", html=True), name="client")

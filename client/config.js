@@ -1,2 +1,3 @@
-// Change this if the API isn't running on the default local port.
-const API_BASE_URL = "http://localhost:8000";
+// Empty string = same-origin (the API is served from the same app as this
+// page, both locally via `uvicorn server.app:app` and on the deployed Space).
+const API_BASE_URL = "";

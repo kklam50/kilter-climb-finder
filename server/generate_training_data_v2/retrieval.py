@@ -7,12 +7,39 @@ candidate-narrowing step before the vector search -- every window of the
 right sequence_length is a candidate. Angle/grade are resolved only for the
 final top-k matches (_enrich_angles()), never used to filter the search.
 
+Window representation (knn_spacing_representation_plan.md): a window is NOT
+a chain of consecutive-in-Y-order deltas anymore. Each hand-eligible hold is
+its own anchor, and its window is the `dx,dy` deltas to its `k` nearest
+neighbors by straight-line distance (`sequence_length` stores `k`, reused
+as-is from the old scheme). This makes matching spatial ("what's near this
+hold") rather than sequential ("what's the next move in climbing order").
+canonical_key/raw_key keep the exact same string shape as before the
+representation change (mirror-normalized on the nearest neighbor's dx sign,
+loose/raw dx,dy pairs), so nothing below this point -- scoring, rarity
+weighting, aggregation -- changed structurally; only what produced the keys
+did.
+
 No model calls happen in assemble_context() or _enrich_angles() -- both are
 pure SQL/string formatting, per the architecture decision earlier in the
 plan (app retrieves, generator only formats). The trained bi-encoder is
 used only in find_similar()/find_opposite(), and only against the
 precomputed vector index from Phase 2 -- there is no per-query re-embedding
 of the whole database.
+
+Score semantics (pattern_rarity_weighting_plan.md Section 3): in "similar"
+mode, `score` is NOT literal cosine similarity -- it's cosine similarity
+discounted by how common the matched window's canonical_key is across the
+corpus (self._pattern_weight, built in __init__ from
+subpattern_occurrences). This exists because window-level matches were
+frequently dominated by a handful of climbs sharing one common, generic
+short pattern with the reference climb (e.g. a straight ladder move) even
+when the rest of those climbs were unrelated -- an exact match on a pattern
+shared by 73 climbs is weak evidence of similarity, unlike an exact match on
+a pattern unique to 1 climb. A climb that only matched via one generic
+3-move pattern now scores well below 1.0 instead of a misleading 1.000.
+"Opposite" mode scores are unaffected -- still raw cosine similarity --
+since common patterns score *high*, not low, so they aren't a source of
+spurious "opposite" matches.
 
 Core functions (plan.md 6.1-6.4):
   find_similar()     -- embed a query, dot-product search against the index (nearest)
@@ -45,6 +72,7 @@ import sqlite3
 import json
 import re
 import argparse
+import math
 import numpy as np
 from rapidfuzz import fuzz, process
 from sentence_transformers import SentenceTransformer
@@ -92,6 +120,22 @@ class RetrievalEngine:
                 "SELECT DISTINCT name FROM climbs WHERE name IS NOT NULL"
             ).fetchall()
         ]
+
+        # Pattern rarity weighting (pattern_rarity_weighting_plan.md Section
+        # 2.1): a window's contribution to a "similar" match is discounted by
+        # how common its canonical_key is across the corpus, so that one
+        # exact match on a generic short pattern (shared by dozens of
+        # unrelated climbs) can't single-handedly drag an otherwise
+        # dissimilar climb to the top of results. df = distinct climbs
+        # containing that (sequence_length, canonical_key) pattern; df >= 1
+        # always, so no divide-by-zero/log(0) risk.
+        self._pattern_weight = {}
+        for seq_len, key, df in self.db.execute("""
+            SELECT sequence_length, canonical_key, COUNT(DISTINCT climb_id)
+            FROM subpattern_occurrences
+            GROUP BY sequence_length, canonical_key
+        """):
+            self._pattern_weight[(seq_len, key)] = 1.0 / (1.0 + math.log(df))
 
     def close(self):
         self.db.close()
@@ -180,19 +224,29 @@ class RetrievalEngine:
             result.update(rows)
         return result
 
-    def _search(self, query_vector, sequence_length, exclude_climb_id, top_k,
-                farthest=False):
+    def _load_candidate_pool(self, sequence_length, exclude_climb_id):
         """
-        query_vector: 1D normalized np array, shape (dim,)
-        farthest: if True, return the LOWEST-scoring candidates instead of the
-                  highest -- this is the entire mechanism behind find_opposite().
-        Returns list of dicts: occurrence_id, climb_id, climb_name,
-        is_mirrored, score (dot product == cosine similarity, since
-        index vectors are pre-normalized -- see build_embedding_index.py).
+        Fetches and vectorizes every candidate window of a given
+        sequence_length, excluding one climb's own windows -- the expensive
+        part of a search (SQL scan + chunked row-index lookup + vector
+        gather), independent of any particular query vector.
+
+        Exists so recommend_for_climb() can compute this ONCE per
+        (sequence_length, reference_climb_id) and reuse it across every
+        window of the reference climb that shares that sequence_length,
+        instead of redoing it per window. Before this, a climb with N
+        windows across sizes {3,4,5} ran N full re-fetches of a
+        ~270K-row-per-size candidate pool -- see the perf investigation this
+        method resolves (search time scaled with both corpus size and
+        reference-climb window count after knn_spacing_representation_plan.md,
+        since every hold now produces its own window).
+
+        Returns None if there are no candidates (caller must handle this the
+        same way _search() used to return [] for an empty candidate set).
         """
         candidates = self.db.execute(
             """
-            SELECT id, climb_id, climb_name, is_mirrored
+            SELECT id, climb_id, climb_name, is_mirrored, canonical_key
             FROM subpattern_occurrences
             WHERE sequence_length = ?
               AND climb_id != ?
@@ -200,21 +254,63 @@ class RetrievalEngine:
             (sequence_length, exclude_climb_id),
         ).fetchall()
         if not candidates:
-            return []
+            return None
 
         occurrence_ids = [row[0] for row in candidates]
         row_index_map = self._row_indices_for(occurrence_ids)
 
         valid = [c for c in candidates if c[0] in row_index_map]
         if not valid:
-            return []
+            return None
 
         row_indices = [row_index_map[c[0]] for c in valid]
         candidate_vectors = np.asarray(self.vectors[row_indices]).astype(np.float32)
 
-        scores = candidate_vectors @ query_vector.astype(np.float32)
+        # Precomputed regardless of mode -- cheap relative to the fetch/gather
+        # above, and _search() only needs to decide whether to apply it.
+        weights = np.array([
+            self._pattern_weight.get((sequence_length, c[4]), 1.0) for c in valid
+        ], dtype=np.float32)
 
-        ranked = sorted(zip(valid, scores), key=lambda x: x[1], reverse=not farthest)[:top_k]
+        return {"rows": valid, "vectors": candidate_vectors, "weights": weights}
+
+    def _search(self, query_vector, sequence_length, exclude_climb_id, top_k,
+                farthest=False, candidate_pool=None):
+        """
+        query_vector: 1D normalized np array, shape (dim,)
+        farthest: if True, return the LOWEST-scoring candidates instead of the
+                  highest -- this is the entire mechanism behind find_opposite().
+        candidate_pool: optional pre-fetched result of _load_candidate_pool()
+                        for this exact (sequence_length, exclude_climb_id) --
+                        pass this to skip the SQL fetch/row-index lookup/vector
+                        gather when the caller already has it (recommend_for_climb()).
+                        Fetched fresh via _load_candidate_pool() if omitted, so
+                        standalone find_similar()/find_opposite() calls are
+                        unaffected.
+        Returns list of dicts: occurrence_id, climb_id, climb_name,
+        is_mirrored, score. In "nearest" mode (farthest=False, i.e. "similar"),
+        score is cosine similarity discounted by pattern rarity -- see
+        self._pattern_weight and pattern_rarity_weighting_plan.md Section 3 --
+        NOT literal cosine similarity anymore. In "farthest" mode (opposite),
+        score is unweighted raw cosine similarity, unchanged from before
+        (dot product, since index vectors are pre-normalized -- see
+        build_embedding_index.py); rarity weighting is not applied there
+        because a common pattern scores *high*, not low, so it isn't a source
+        of spurious "opposite" matches.
+        """
+        pool = candidate_pool if candidate_pool is not None else \
+            self._load_candidate_pool(sequence_length, exclude_climb_id)
+        if pool is None:
+            return []
+
+        raw_scores = pool["vectors"] @ query_vector.astype(np.float32)
+
+        if farthest:
+            scores = raw_scores  # opposite mode: rarity is not the failure mode here
+        else:
+            scores = raw_scores * pool["weights"]
+
+        ranked = sorted(zip(pool["rows"], scores), key=lambda x: x[1], reverse=not farthest)[:top_k]
 
         return [
             {
@@ -229,7 +325,7 @@ class RetrievalEngine:
 
     # -- 6.2: similarity search ------------------------------------------------
 
-    def find_similar(self, reference_occurrence_id, top_k=10):
+    def find_similar(self, reference_occurrence_id, top_k=10, candidate_pool=None):
         ref = self.db.execute(
             "SELECT climb_id, sequence_length FROM subpattern_occurrences WHERE id = ?",
             (reference_occurrence_id,),
@@ -243,11 +339,12 @@ class RetrievalEngine:
             raise ValueError(f"No embedding found for occurrence_id={reference_occurrence_id}")
         query_vector = np.asarray(self.vectors[row_index_map[reference_occurrence_id]])
 
-        return self._search(query_vector, sequence_length, ref_climb_id, top_k)
+        return self._search(query_vector, sequence_length, ref_climb_id, top_k,
+                             candidate_pool=candidate_pool)
 
     # -- 6.3: "opposite" = farthest in the same trained similarity space --------
 
-    def find_opposite(self, reference_occurrence_id, top_k=10):
+    def find_opposite(self, reference_occurrence_id, top_k=10, candidate_pool=None):
         """
         Same query vector as find_similar() -- the reference window's own
         embedding, straight from the index, no transformation. The only
@@ -267,7 +364,8 @@ class RetrievalEngine:
             raise ValueError(f"No embedding found for occurrence_id={reference_occurrence_id}")
         query_vector = np.asarray(self.vectors[row_index_map[reference_occurrence_id]])
 
-        return self._search(query_vector, sequence_length, ref_climb_id, top_k, farthest=True)
+        return self._search(query_vector, sequence_length, ref_climb_id, top_k, farthest=True,
+                             candidate_pool=candidate_pool)
 
     # -- angle/grade enrichment: resolved only for final top-k matches ----------
 
@@ -324,7 +422,7 @@ class RetrievalEngine:
             raise ValueError("mode must be 'similar' or 'opposite'")
 
         reference_windows = self.db.execute(
-            "SELECT id FROM subpattern_occurrences WHERE climb_id = ?",
+            "SELECT id, sequence_length FROM subpattern_occurrences WHERE climb_id = ?",
             (reference_climb_id,),
         ).fetchall()
         if not reference_windows:
@@ -337,10 +435,24 @@ class RetrievalEngine:
         # climb that's consistently far across all of them.
         better = (lambda new, old: new > old) if mode == "similar" else (lambda new, old: new < old)
 
+        # The candidate pool for a given sequence_length depends only on
+        # (sequence_length, reference_climb_id) -- both fixed across this
+        # whole call -- not on which of the reference climb's windows is
+        # being queried. Load each size's pool once and reuse it across
+        # every window of that size, instead of re-fetching/re-gathering it
+        # per window (see _load_candidate_pool()'s docstring for the perf
+        # issue this fixes).
+        candidate_pools = {}
+
         best_by_climb = {}
         window_counts = {}
-        for (occurrence_id,) in reference_windows:
-            matches = search_fn(occurrence_id, top_k=top_k)
+        for occurrence_id, sequence_length in reference_windows:
+            if sequence_length not in candidate_pools:
+                candidate_pools[sequence_length] = self._load_candidate_pool(
+                    sequence_length, reference_climb_id
+                )
+            matches = search_fn(occurrence_id, top_k=top_k,
+                                 candidate_pool=candidate_pools[sequence_length])
             for m in matches:
                 cid = m["climb_id"]
                 if cid not in best_by_climb or better(m["score"], best_by_climb[cid]["score"]):
