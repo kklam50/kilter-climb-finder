@@ -1,7 +1,0 @@
-.venv
-.git
-.claude
-__pycache__
-**/__pycache__
-plans
-*.pyc
