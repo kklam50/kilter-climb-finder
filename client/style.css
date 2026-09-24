@@ -141,6 +141,23 @@ button:disabled {
   color: var(--text-dim);
 }
 
+.selected {
+  margin-top: 20px;
+}
+
+.selected h2 {
+  font-size: 1rem;
+  color: var(--text-dim);
+  font-weight: 500;
+}
+
+.selected-climb {
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+
 .picker {
   margin-top: 20px;
 }
@@ -249,4 +266,121 @@ button:disabled {
   padding: 14px;
   font-size: 0.85rem;
   margin-top: 10px;
+}
+
+.matches {
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+}
+
+.match-card {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+}
+
+.match-card__footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-top: auto;
+}
+
+.selected-climb {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.selected-climb .board-thumb {
+  flex: 0 0 250px;
+  max-width: 100%;
+}
+
+.selected-climb__body {
+  flex: 1 1 200px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem
+}
+
+.board-thumb {
+  width: 100%;
+  aspect-ratio: 1030 / 1180;
+  background: #fff;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.board-thumb .board {
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: zoom-in;
+}
+
+.board-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.75);
+  padding: 16px;
+}
+
+.board-modal[hidden] {
+  display: none;
+}
+
+.board-modal__dialog {
+  position: relative;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.board-modal__title {
+  font-weight: 600;
+  padding-right: 32px;
+}
+
+.board-modal__body {
+  min-height: 0;
+  display: flex;
+  justify-content: center;
+}
+
+.board-modal__body .board {
+  height: min(82vh, 900px);
+  width: auto;
+  max-width: 100%;
+  background: #fff;
+  border-radius: 6px;
+}
+
+.board-modal__close {
+  position: absolute;
+  top: 6px;
+  right: 10px;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 1.6rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+@media (max-width: 560px) {
+  .selected-climb .board-thumb {
+    flex: 1 1 100%;
+  }
 }

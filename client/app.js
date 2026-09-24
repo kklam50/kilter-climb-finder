@@ -2,6 +2,8 @@ const healthEl = document.getElementById("health");
 const formEl = document.getElementById("search-form");
 const submitBtn = document.getElementById("submit-btn");
 const statusEl = document.getElementById("status");
+const selectedEl = document.getElementById("selected");
+const selectedClimbEl = document.getElementById("selected-climb");
 const pickerEl = document.getElementById("picker");
 const pickerListEl = document.getElementById("picker-list");
 const resultsEl = document.getElementById("results");
@@ -33,6 +35,69 @@ function hideStatus() {
   statusEl.hidden = true;
 }
 
+// --- Board rendering -------------------------------------------------------
+// board.png: 1600x1236, bolt-on grid at 60px per 8 board units, x=72 at px 800,
+// y=152 at px 70. Only the 12x12 region is shown (viewBox crops the rest).
+const BOARD_VIEWBOX = "285 35 1030 1180";
+const ROLE_COLORS = { 12: "#00dd00", 13: "#00ffff", 14: "#ff00ff", 15: "#ffa500" };
+
+let boardModalEl = null;
+
+function closeBoardModal() {
+  if (boardModalEl) boardModalEl.hidden = true;
+}
+
+function openBoardModal(svgEl, title) {
+  if (!boardModalEl) {
+    boardModalEl = document.createElement("div");
+    boardModalEl.className = "board-modal";
+    boardModalEl.innerHTML = `
+      <div class="board-modal__dialog" role="dialog" aria-modal="true">
+        <button type="button" class="board-modal__close" aria-label="Close">&times;</button>
+        <div class="board-modal__title"></div>
+        <div class="board-modal__body"></div>
+      </div>`;
+    boardModalEl.addEventListener("click", (e) => {
+      if (e.target === boardModalEl || e.target.closest(".board-modal__close")) closeBoardModal();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closeBoardModal();
+    });
+    document.body.appendChild(boardModalEl);
+  }
+  boardModalEl.querySelector(".board-modal__title").textContent = title;
+  const body = boardModalEl.querySelector(".board-modal__body");
+  body.replaceChildren(svgEl.cloneNode(true));
+  boardModalEl.hidden = false;
+}
+
+function boardPx(x, y, mirrored) {
+  const bx = mirrored ? 144 - x : x;
+  return [800 + (bx - 72) * 7.5, 70 + (152 - y) * 7.5];
+}
+
+async function renderBoard(container, climbId, mirrored = false, title = "") {
+  try {
+    const res = await fetch(`${API_BASE_URL}/climbs/${encodeURIComponent(climbId)}/holds`);
+    if (!res.ok) return;
+    const holds = await res.json();
+    const rings = holds.map((h) => {
+      const [cx, cy] = boardPx(h.x, h.y, mirrored);
+      return `<circle cx="${cx}" cy="${cy}" r="34" fill="none" stroke="${ROLE_COLORS[h.role_id] ?? "#fff"}" stroke-width="7"/>`;
+    }).join("");
+    container.innerHTML = `<svg viewBox="${BOARD_VIEWBOX}" class="board">
+      <image href="board.png" width="1600" height="1236"/>${rings}</svg>`;
+    const svg = container.querySelector("svg");
+    svg.addEventListener("click", () => openBoardModal(svg, title));
+  } catch (err) {
+    console.warn("board render failed", err);
+  }
+}
+
+function loadThumbnail(container, climbId, mirrored = false, title = "") {
+  renderBoard(container.querySelector(".board-thumb"), climbId, mirrored, title);
+}
+
 function renderMatches(data) {
   matchesEl.innerHTML = "";
 
@@ -43,22 +108,20 @@ function renderMatches(data) {
   for (const match of data.matches) {
     const card = document.createElement("div");
     card.className = "match-card";
-    const angleChips = match.angles.length
-      ? match.angles
-          .map((a) => `<span class="angle-chip">${a.angle}° · ${escapeHtml(a.grade ?? "ungraded")}</span>`)
-          .join("")
-      : `<span class="angle-chip">no logged angles</span>`;
+    const angleChips = renderAngleChips(match.angles);
     card.innerHTML = `
-      <div>
-        <div class="match-card__name">${escapeHtml(match.climb_name ?? match.climb_id)}</div>
-        <div class="match-card__meta">
+      <div class="board-thumb"></div>
+      <div class="match-card__name">${escapeHtml(match.climb_name ?? match.climb_id)}</div>
+      <div class="match-card__angles">${angleChips}</div>
+      <div class="match-card__footer">
+        <span class="match-card__meta">
           ${match.is_mirrored ? "mirrored · " : ""}${match.matched_window_count} matched windows
-        </div>
-        <div class="match-card__angles">${angleChips}</div>
+        </span>
+        <span class="match-card__score">${match.score.toFixed(3)}</span>
       </div>
-      <div class="match-card__score">${match.score.toFixed(3)}</div>
     `;
     matchesEl.appendChild(card);
+    loadThumbnail(card, match.climb_id, match.is_mirrored, match.climb_name ?? match.climb_id);
   }
 
   contextEl.textContent = data.context;
@@ -121,14 +184,37 @@ async function fetchRecommendations(climbId) {
   return res.json();
 }
 
-async function selectClimb(climbId) {
+function renderAngleChips(angles) {
+  if (!angles.length) return `<span class="angle-chip">no logged angles</span>`;
+  return angles
+    .map((a) => `<span class="angle-chip">${a.angle}° · ${escapeHtml(a.grade ?? "ungraded")}</span>`)
+    .join("");
+}
+
+function renderSelected(candidate) {
+  selectedClimbEl.innerHTML = `
+    <div class="board-thumb"></div>
+    <div class="selected-climb__body">
+      <div class="match-card__name">${escapeHtml(candidate.climb_name)}</div>
+      <div class="match-card__meta">
+        set by ${escapeHtml(candidate.setter_username)} · ${escapeHtml(candidate.created_at)}
+      </div>
+      <div class="match-card__angles">${renderAngleChips(candidate.angles)}</div>
+    </div>
+  `;
+  loadThumbnail(selectedClimbEl, candidate.climb_id, false, candidate.climb_name);
+  selectedEl.hidden = false;
+}
+
+async function selectClimb(candidate) {
   pickerEl.hidden = true;
   resultsEl.hidden = true;
+  renderSelected(candidate);
   submitBtn.disabled = true;
   showStatus("Loading recommendations…", "loading");
 
   try {
-    const data = await fetchRecommendations(climbId);
+    const data = await fetchRecommendations(candidate.climb_id);
     hideStatus();
     renderMatches(data);
   } catch (err) {
@@ -151,7 +237,7 @@ function renderPicker(candidates) {
         set by ${escapeHtml(candidate.setter_username)} · ${escapeHtml(candidate.created_at)}
       </span>
     `;
-    option.addEventListener("click", () => selectClimb(candidate.climb_id));
+    option.addEventListener("click", () => selectClimb(candidate));
     pickerListEl.appendChild(option);
   }
 
@@ -166,6 +252,7 @@ formEl.addEventListener("submit", async (event) => {
 
   pickerEl.hidden = true;
   resultsEl.hidden = true;
+  selectedEl.hidden = true;
   submitBtn.disabled = true;
   showStatus("Looking up climb…", "loading");
 
@@ -178,7 +265,7 @@ formEl.addEventListener("submit", async (event) => {
     }
 
     if (candidates.length === 1) {
-      await selectClimb(candidates[0].climb_id);
+      await selectClimb(candidates[0]);
       return;
     }
 

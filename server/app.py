@@ -88,6 +88,7 @@ class ClimbSummary(BaseModel):
     climb_name: str
     setter_username: str
     created_at: str
+    angles: list[AngleGrade]
 
 
 class UnindexedSearchResponse(BaseModel):
@@ -136,6 +137,16 @@ def search_unindexed_climb(name: str = Query(..., min_length=1)):
         message=f"'{name}' wasn't found in the database. Searching for climbs "
                  f"outside the database isn't supported yet.",
     )
+
+
+@app.get("/climbs/{climb_id}/holds")
+def get_climb_holds(climb_id: str):
+    if engine is None:
+        raise HTTPException(status_code=503, detail="Retrieval engine not initialized")
+    try:
+        return engine.get_climb_holds(climb_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @app.get("/climbs/{climb_id}/recommendations", response_model=RecommendationResponse)

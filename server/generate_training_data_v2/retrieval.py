@@ -189,6 +189,7 @@ class RetrievalEngine:
                 "climb_name": r[1],
                 "setter_username": r[2],
                 "created_at": r[3],
+                "angles": self._enrich_angles(r[0]),
             }
             for r in rows
         ]
@@ -394,6 +395,22 @@ class RetrievalEngine:
             (climb_id,),
         ).fetchall()
         return [{"angle": r[0], "grade": r[2]} for r in rows]
+
+    def get_climb_holds(self, climb_id):
+        """Parse a climb's frames string into [{x, y, role}] board positions."""
+        row = self.db.execute("SELECT frames FROM climbs WHERE uuid = ?", (climb_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"Climb {climb_id} not found")
+        segments = re.findall(r"p(\d+)r(\d+)", row[0] or "")
+        holds = []
+        for placement_id, role_id in segments:
+            pos = self.db.execute(
+                "SELECT h.x, h.y FROM placements p JOIN holes h ON h.id = p.hole_id WHERE p.id = ?",
+                (int(placement_id),),
+            ).fetchone()
+            if pos is not None:
+                holds.append({"x": pos[0], "y": pos[1], "role_id": int(role_id)})
+        return holds
 
     # -- 6.4: context assembly for the generator, no model call -----------------
 
