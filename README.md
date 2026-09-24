@@ -82,7 +82,6 @@ server/generate_training_data_v2/
   s4_build_embedding_index.py                 embed all windows -> memmap index
   retrieval.py              RetrievalEngine (query-time logic)
   generate_answer.py        optional LLM answer layer (LM Studio, not used by the app)
-export_climbing_data.py     legacy grid-based training-set export
 ```
 
 ## Building the data and model
