@@ -71,18 +71,17 @@ function openBoardModal(svgEl, title) {
   boardModalEl.hidden = false;
 }
 
-function boardPx(x, y, mirrored) {
-  const bx = mirrored ? 144 - x : x;
-  return [800 + (bx - 72) * 7.5, 70 + (152 - y) * 7.5];
+function boardPx(x, y) {
+  return [800 + (x - 72) * 7.5, 70 + (152 - y) * 7.5];
 }
 
-async function renderBoard(container, climbId, mirrored = false, title = "") {
+async function renderBoard(container, climbId, title = "") {
   try {
     const res = await fetch(`${API_BASE_URL}/climbs/${encodeURIComponent(climbId)}/holds`);
     if (!res.ok) return;
     const holds = await res.json();
     const rings = holds.map((h) => {
-      const [cx, cy] = boardPx(h.x, h.y, mirrored);
+      const [cx, cy] = boardPx(h.x, h.y);
       return `<circle cx="${cx}" cy="${cy}" r="34" fill="none" stroke="${ROLE_COLORS[h.role_id] ?? "#fff"}" stroke-width="7"/>`;
     }).join("");
     container.innerHTML = `<svg viewBox="${BOARD_VIEWBOX}" class="board">
@@ -94,8 +93,8 @@ async function renderBoard(container, climbId, mirrored = false, title = "") {
   }
 }
 
-function loadThumbnail(container, climbId, mirrored = false, title = "") {
-  renderBoard(container.querySelector(".board-thumb"), climbId, mirrored, title);
+function loadThumbnail(container, climbId, title = "") {
+  renderBoard(container.querySelector(".board-thumb"), climbId, title);
 }
 
 function renderMatches(data) {
@@ -121,7 +120,7 @@ function renderMatches(data) {
       </div>
     `;
     matchesEl.appendChild(card);
-    loadThumbnail(card, match.climb_id, match.is_mirrored, match.climb_name ?? match.climb_id);
+    loadThumbnail(card, match.climb_id, match.climb_name ?? match.climb_id);
   }
 
   contextEl.textContent = data.context;
@@ -202,7 +201,7 @@ function renderSelected(candidate) {
       <div class="match-card__angles">${renderAngleChips(candidate.angles)}</div>
     </div>
   `;
-  loadThumbnail(selectedClimbEl, candidate.climb_id, false, candidate.climb_name);
+  loadThumbnail(selectedClimbEl, candidate.climb_id, candidate.climb_name);
   selectedEl.hidden = false;
 }
 
