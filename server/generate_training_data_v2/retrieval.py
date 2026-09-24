@@ -19,6 +19,12 @@ loose/raw dx,dy pairs), so nothing below this point -- scoring, rarity
 weighting, aggregation -- changed structurally; only what produced the keys
 did.
 
+Foothold matching (foothold_matching_plan.md): windows are still anchored on
+hand holds only, but a window's `k` neighbors may now include Foot-Only
+holds. Each pair in canonical_key/raw_key ends in `,c=H` (hand) or `,c=F`
+(foot), so hand/foot-distinct windows already get distinct keys and
+distinct rarity weights with no query changes.
+
 No model calls happen in assemble_context() or _enrich_angles() -- both are
 pure SQL/string formatting, per the architecture decision earlier in the
 plan (app retrieves, generator only formats). The trained bi-encoder is
@@ -79,15 +85,15 @@ from sentence_transformers import SentenceTransformer
 
 FUZZY_SCORE_CUTOFF = 75
 
-_PAIR_RE = re.compile(r"dx=(-?\d+),dy=(-?\d+)")
+_PAIR_RE = re.compile(r"dx=(-?\d+),dy=(-?\d+),c=([HF])")
 
 
 def parse_key(key):
-    return [(int(dx), int(dy)) for dx, dy in _PAIR_RE.findall(key)]
+    return [(int(dx), int(dy), c) for dx, dy, c in _PAIR_RE.findall(key)]
 
 
 def serialize_key(pairs):
-    return " | ".join(f"dx={dx},dy={dy}" for dx, dy in pairs)
+    return " | ".join(f"dx={dx},dy={dy},c={c}" for dx, dy, c in pairs)
 
 
 class RetrievalEngine:

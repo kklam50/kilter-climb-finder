@@ -7,6 +7,10 @@ Implements knn_spacing_representation_plan.md: a window is a hold's `k`
 nearest neighbors by straight-line distance (not the old sorted-by-Y
 consecutive-delta chain). WINDOW_SIZES values are now `k` -- reused as-is,
 still stored in the `sequence_length` column, per the plan's Section 1.2.
+
+Implements foothold_matching_plan.md: anchors are hand holds only (S/M/F),
+but a window's neighbors may also be Foot-Only (X) holds. Each neighbor pair
+carries an inline type token (`,c=H` / `,c=F`) in canonical_key/raw_key.
 """
 
 import sqlite3
@@ -58,55 +62,63 @@ def parse_frames_to_piece_map(frames_str, holes_table, placement_roles_table):
     return piece_map
 
 
-def extract_canonical_windows(piece_map, k=3):
-    # Filters out symbol "X" holds -- keeps everything else. See note above
-    # about this not being restricted to "M" (hand) holds specifically.
-    m_holds = [hold for hold in piece_map if hold.get("symbol") != "X"]
+HAND_SYMBOLS = {"S", "M", "F"}
+FOOT_SYMBOLS = {"X"}
 
-    if len(m_holds) < k + 1:
+
+def extract_canonical_windows(piece_map, k=3):
+    hand_holds = [h for h in piece_map if h.get("symbol") in HAND_SYMBOLS]
+    foot_holds = [h for h in piece_map if h.get("symbol") in FOOT_SYMBOLS]
+
+    # Every anchor is one of hand_holds; every neighbor candidate is drawn
+    # from hand_holds + foot_holds combined (foothold_matching_plan.md
+    # Section 2). Holds with an unrecognized role (symbol == ".") belong to
+    # neither pool.
+    neighbor_pool = [(h, "H") for h in hand_holds] + [(h, "F") for h in foot_holds]
+
+    if not hand_holds or len(neighbor_pool) < k + 1:
         return []
 
     windows = []
-    for anchor in m_holds:
+    for anchor in hand_holds:
         # Distance to every other hold; deterministic tiebreak
         # (dist_sq, dy, dx) so exact ties on the shared grid always resolve
         # the same way across backfill runs.
         others = []
-        for h in m_holds:
+        for h, cls in neighbor_pool:
             if h is anchor:
                 continue
             dx = h['x'] - anchor['x']
             dy = h['y'] - anchor['y']
-            others.append((dx * dx + dy * dy, dy, dx, h))
+            others.append((dx * dx + dy * dy, dy, dx, cls, h))
         others.sort(key=lambda o: (o[0], o[1], o[2]))
         nearest = others[:k]
 
-        deltas = [(dx, dy) for _dist_sq, dy, dx, _h in nearest]
+        deltas = [(dx, dy, cls) for _dist_sq, dy, dx, cls, _h in nearest]
 
-        # Invert dx if the nearest neighbor is to the left, for canonical
-        # (mirror) normalization -- generalized from "first delta" (old,
-        # sorted-by-Y scheme) to "nearest neighbor" (this scheme).
+        # Invert dx if the nearest neighbor (of either type) is to the left,
+        # for canonical (mirror) normalization.
         if deltas[0][0] < 0:
-            norm_win = [(-dx, dy) for dx, dy in deltas]
+            norm_win = [(-dx, dy, cls) for dx, dy, cls in deltas]
             is_mirrored = True
         else:
             norm_win = deltas
             is_mirrored = False
 
         loose_parts, raw_parts = [], []
-        for dx, dy in norm_win:
+        for dx, dy, cls in norm_win:
             # +/-1 tolerance lives here: round to nearest even number
             normalized_dx = round(dx / 2) * 2
             normalized_dy = round(dy / 2) * 2
-            loose_parts.append(f"dx={normalized_dx},dy={normalized_dy}")
-            raw_parts.append(f"dx={dx},dy={dy}")
+            loose_parts.append(f"dx={normalized_dx},dy={normalized_dy},c={cls}")
+            raw_parts.append(f"dx={dx},dy={dy},c={cls}")
 
         windows.append({
             "canonical_key": " | ".join(loose_parts),
             "raw_key": " | ".join(raw_parts),
             "is_mirrored": is_mirrored,
             "start_hold": anchor,             # the neighborhood's center
-            "end_hold": nearest[-1][3],        # farthest of the k neighbors
+            "end_hold": nearest[-1][4],        # farthest of the k neighbors
         })
 
     return windows

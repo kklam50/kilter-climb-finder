@@ -30,6 +30,7 @@ Output: JSONL, one record per anchor, fields:
     "anchor_raw_key": str,        "anchor_climb_id": str,
     "positive_raw_key": str,      "positive_climb_id": str,
     "hard_negative_raw_key": str,      "hard_negative_climb_id": null,  # synthetic, not a real climb
+    "type_flip_negative_raw_key": str, # same geometry, ONE neighbor's c=H<->c=F flipped
     "easy_negative_raw_key": str | null, "easy_negative_climb_id": str | null,
   }
 """
@@ -45,15 +46,15 @@ import math
 DB_PATH_DEFAULT = "../db/db.sqlite"
 OUTPUT_DEFAULT = "training_pairs.jsonl"
 
-_PAIR_RE = re.compile(r"dx=(-?\d+),dy=(-?\d+)")
+_PAIR_RE = re.compile(r"dx=(-?\d+),dy=(-?\d+),c=([HF])")
 
 
 def parse_key(key):
-    return [(int(dx), int(dy)) for dx, dy in _PAIR_RE.findall(key)]
+    return [(int(dx), int(dy), c) for dx, dy, c in _PAIR_RE.findall(key)]
 
 
 def serialize_key(pairs):
-    return " | ".join(f"dx={dx},dy={dy}" for dx, dy in pairs)
+    return " | ".join(f"dx={dx},dy={dy},c={c}" for dx, dy, c in pairs)
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +83,7 @@ def infer_grid_step(conn, sample_size=3000, fallback=2):
         ).fetchone()
         if row is None:
             continue
-        for dx, dy in parse_key(row[0]):
+        for dx, dy, _c in parse_key(row[0]):
             if dx != 0:
                 values.add(abs(dx))
             if dy != 0:
@@ -118,13 +119,31 @@ def make_synthetic_hard_negative(raw_key, grid_step, rng, hops=1):
     if not pairs:
         return None
     idx = rng.randrange(len(pairs))
-    dx, dy = pairs[idx]
+    dx, dy, c = pairs[idx]
     shift = hops * grid_step
     if rng.random() < 0.5:
         dx += shift if rng.random() < 0.5 else -shift
     else:
         dy += shift if rng.random() < 0.5 else -shift
-    pairs[idx] = (dx, dy)
+    pairs[idx] = (dx, dy, c)  # type unchanged: same neighbor, shifted
+    return serialize_key(pairs)
+
+
+def make_type_flip_negative(raw_key, rng):
+    """
+    Flip the hand/foot type (c=H <-> c=F) of exactly one neighbor, leaving
+    every dx,dy untouched. Without this, no training pair ever contrasts
+    hand vs. foot -- positives are identical text and make_synthetic_hard_negative
+    deliberately preserves `c` -- so the embedding model has no reason to
+    treat the c= token as meaningful (found in the foothold_matching_plan.md
+    smoke test: windows differing only in one c= scored ~1.0).
+    """
+    pairs = parse_key(raw_key)
+    if not pairs:
+        return None
+    idx = rng.randrange(len(pairs))
+    dx, dy, c = pairs[idx]
+    pairs[idx] = (dx, dy, "F" if c == "H" else "H")
     return serialize_key(pairs)
 
 
@@ -182,6 +201,9 @@ def find_easy_negative(conn, exclude_canonical_key, sequence_length, max_id, max
 
 def build_training_pairs(db_path, output_path, max_anchors, hops, seed, grid_step_override):
     rng = random.Random(seed)
+    # Separate stream so adding the type-flip negative doesn't change which
+    # hard negatives the geometry-shift rng produces for a given seed.
+    flip_rng = random.Random(seed + 1)
     random.seed(seed)  # find_easy_negative uses module-level random
     conn = sqlite3.connect(db_path)
     ensure_indexes(conn)
@@ -219,6 +241,8 @@ def build_training_pairs(db_path, output_path, max_anchors, hops, seed, grid_ste
                 anchor[2], grid_step, rng, hops=hops
             )
 
+            type_flip_negative_raw_key = make_type_flip_negative(anchor[2], flip_rng)
+
             easy_negative = find_easy_negative(conn, canonical_key, sequence_length, max_id)
 
             record = {
@@ -229,6 +253,7 @@ def build_training_pairs(db_path, output_path, max_anchors, hops, seed, grid_ste
                 "positive_climb_id": positive[1],
                 "hard_negative_raw_key": hard_negative_raw_key,
                 "hard_negative_climb_id": None,  # synthetic, not a real climb
+                "type_flip_negative_raw_key": type_flip_negative_raw_key,
                 "easy_negative_raw_key": easy_negative["raw_key"] if easy_negative else None,
                 "easy_negative_climb_id": easy_negative["climb_id"] if easy_negative else None,
             }

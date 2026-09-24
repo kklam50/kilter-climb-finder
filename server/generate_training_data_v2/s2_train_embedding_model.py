@@ -84,12 +84,20 @@ def build_mnrl_examples(records):
 
 
 def build_triplet_examples(records):
-    """(anchor, positive, hard_negative) -- only where 4.1 found a hard negative."""
-    return [
-        InputExample(texts=[r["anchor_raw_key"], r["positive_raw_key"], r["hard_negative_raw_key"]])
-        for r in records
-        if r.get("hard_negative_raw_key")
-    ]
+    """
+    (anchor, positive, negative) -- one triplet per available hard negative:
+    the geometry-shift negative (where 4.1 found one) and the type-flip
+    negative (foothold_matching_plan.md; teaches that c=H vs c=F matters).
+    A record can contribute both.
+    """
+    examples = []
+    for r in records:
+        for field in ("hard_negative_raw_key", "type_flip_negative_raw_key"):
+            if r.get(field):
+                examples.append(InputExample(
+                    texts=[r["anchor_raw_key"], r["positive_raw_key"], r[field]]
+                ))
+    return examples
 
 
 def build_triplet_eval_lists(records):
@@ -122,7 +130,9 @@ def train(args):
     print(f"  {len(train_records)} train / {len(val_records)} val (split by climb_id)")
 
     n_triplet_train = sum(1 for r in train_records if r.get("hard_negative_raw_key"))
-    print(f"  {n_triplet_train} train records have a hard negative available")
+    n_flip_train = sum(1 for r in train_records if r.get("type_flip_negative_raw_key"))
+    print(f"  {n_triplet_train} train records have a geometry hard negative, "
+          f"{n_flip_train} have a type-flip negative")
 
     print(f"Loading base model: {args.base_model}")
     model = SentenceTransformer(args.base_model)

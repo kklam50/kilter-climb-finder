@@ -22,7 +22,7 @@ import argparse
 import numpy as np
 from sentence_transformers import SentenceTransformer, util
 
-from server.generate_training_data_v2.s2_train_embedding_model import load_records, split_by_climb
+from s2_train_embedding_model import load_records, split_by_climb
 
 
 def collect_eval_texts(val_records):
@@ -40,6 +40,18 @@ def collect_eval_texts(val_records):
         hard_negs.append(r["hard_negative_raw_key"])
         easy_negs.append(r["easy_negative_raw_key"])
     return anchors, positives, hard_negs, easy_negs
+
+
+def collect_type_flip_texts(val_records):
+    """(anchors, positives, type_flip_negs) for records that have a type-flip negative."""
+    anchors, positives, flips = [], [], []
+    for r in val_records:
+        if not r.get("type_flip_negative_raw_key"):
+            continue
+        anchors.append(r["anchor_raw_key"])
+        positives.append(r["positive_raw_key"])
+        flips.append(r["type_flip_negative_raw_key"])
+    return anchors, positives, flips
 
 
 def batch_encode_unique(model, *text_lists, batch_size=256):
@@ -75,8 +87,12 @@ def evaluate(args):
     if len(anchors) < 50:
         print("  WARNING: very small eval set -- results below may not be reliable.")
 
+    flip_anchors, flip_positives, flip_negs = collect_type_flip_texts(val_records)
+    print(f"  {len(flip_anchors)} records have a type-flip negative")
+
     print("\nEncoding...")
-    lookup = batch_encode_unique(model, anchors, positives, hard_negs, easy_negs)
+    lookup = batch_encode_unique(model, anchors, positives, hard_negs, easy_negs,
+                                 flip_anchors, flip_positives, flip_negs)
 
     sim_pos = paired_cosine(lookup, anchors, positives)
     sim_hard = paired_cosine(lookup, anchors, hard_negs)
@@ -96,6 +112,39 @@ def evaluate(args):
     print(f"  sim(hard_negative) > sim(easy_negative) in {hard_gt_easy*100:.1f}% of records "
           f"(confirms hard negatives are genuinely 'harder' than random negatives)")
 
+    # foothold_matching_plan.md Section 4.2/5 step 5: hard-negative synthesis
+    # can leave a c=F pair at an implausible rank, so check the subset of
+    # records containing at least one foot neighbor separately from the rest.
+    has_foot = np.array(["c=F" in a for a in anchors])
+    print("\n=== Foot-inclusive breakdown (anchor contains >=1 c=F) ===")
+    for label, mask in (("with c=F", has_foot), ("hands only", ~has_foot)):
+        n = int(mask.sum())
+        if n == 0:
+            print(f"  {label:12s} n=0 -- skipped")
+            continue
+        win = float(np.mean(sim_pos[mask] > sim_hard[mask]))
+        gap = float(sim_pos[mask].mean() - sim_hard[mask].mean())
+        print(f"  {label:12s} n={n:6d}  sim(pos) > sim(hard) in {win*100:.1f}%  mean gap={gap:.4f}")
+
+    # Type-flip check (hand<->foot swap of one neighbor, same geometry).
+    # Required because the model can otherwise ignore the c= token entirely.
+    flip_passed = True
+    if flip_anchors:
+        sim_flip_pos = paired_cosine(lookup, flip_anchors, flip_positives)
+        sim_flip = paired_cosine(lookup, flip_anchors, flip_negs)
+        flip_win = float(np.mean(sim_flip_pos > sim_flip))
+        flip_gap = float(sim_flip_pos.mean() - sim_flip.mean())
+        print("\n=== Type-flip check (one neighbor's c=H<->c=F flipped) ===")
+        summarize("positive", sim_flip_pos)
+        summarize("type_flip_negative", sim_flip)
+        print(f"  sim(pos) > sim(type_flip) in {flip_win*100:.1f}% of records "
+              f"(mean gap={flip_gap:.4f})")
+        if flip_gap <= 0 or flip_win < args.pass_threshold:
+            flip_passed = False
+    else:
+        print("\n  NOTE: no type_flip_negative_raw_key in pairs file -- rerun "
+              "s1_generate_contrastive_training_pairs.py; type-flip check skipped.")
+
     mean_gap_pos_hard = sim_pos.mean() - sim_hard.mean()
     mean_gap_hard_easy = sim_hard.mean() - sim_easy.mean()
 
@@ -113,6 +162,13 @@ def evaluate(args):
     else:
         print(f"  PASS: positives separated from hard negatives "
               f"(mean gap={mean_gap_pos_hard:.4f}, pairwise win rate={pos_gt_hard*100:.1f}%).")
+
+    if flip_anchors and not flip_passed:
+        print("  FAIL: the model does not separate hand vs. foot neighbors "
+              "(type-flip negatives score too close to positives).")
+        passed = False
+    elif flip_anchors:
+        print("  PASS: type-flip negatives are separated from positives.")
 
     if mean_gap_hard_easy <= 0:
         print(f"  NOTE: hard negatives are not measurably harder than easy negatives "
