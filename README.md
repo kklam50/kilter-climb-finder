@@ -7,6 +7,9 @@ neighborhoods rather than grade/name search.
 Matching is **pattern-only**: angle and grade are metadata attached to the
 final results, never used to filter or rank the search.
 
+Explore the demo version: https://kilter-climb-finder-demo.vercel.app/
+Demo repo: https://github.com/kklam50/kilter-climb-finder-demo
+
 ## How it works
 
 ### Representation
