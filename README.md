@@ -1,13 +1,3 @@
----
-title: Kilter Climb Finder
-emoji: 🧗
-colorFrom: indigo
-colorTo: purple
-sdk: docker
-app_port: 7860
-pinned: false
----
-
 # Kilter Climb Finder
 
 Given a Kilter Board climb, finds other climbs with similar (or opposite)
@@ -97,8 +87,9 @@ export_climbing_data.py     legacy grid-based training-set export
 
 ## Building the data and model
 
-The raw Kilter Board SQLite database goes in `server/db/db.sqlite`. Scripts
-use paths relative to their own directory, so run them from
+The raw Kilter Board SQLite database goes in `server/db/db.sqlite`. The Kilter Board 
+SQLite database can be retrieved from BoardLib: https://github.com/lemeryfertitta/BoardLib
+Scripts use paths relative to their own directory, so run them from
 `server/generate_training_data_v2/`:
 
 ```
